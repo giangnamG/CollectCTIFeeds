@@ -228,6 +228,11 @@ class BotSearchResults:
     request_message: Message
     reply_messages: list[Message] = field(default_factory=list)
     page_snapshots: list[Message] = field(default_factory=list)
+    total_pages: int | None = None
+    pages_collected: int = 0
+    checkpoint_path: str | None = None
+    checkpoint_complete: bool = False
+    resumed_from_checkpoint: bool = False
     extracted_usernames: list[str] = field(default_factory=list)
     extracted_links: list[str] = field(default_factory=list)
     extracted_chat_usernames: list[str] = field(default_factory=list)

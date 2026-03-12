@@ -48,6 +48,27 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Giới hạn số trang tối đa khi quét kết quả có phân trang",
     )
+    parser.add_argument(
+        "--checkpoint-path",
+        default=None,
+        help="Ghi từng trang kết quả ra file checkpoint JSONL để resume crawl lớn",
+    )
+    parser.add_argument(
+        "--resume-checkpoint",
+        action="store_true",
+        help="Tiếp tục crawl từ checkpoint đã có thay vì ghi đè từ đầu",
+    )
+    parser.add_argument(
+        "--no-keep-pages-in-memory",
+        action="store_true",
+        help="Không giữ toàn bộ page snapshot trong RAM; dùng chung với checkpoint cho crawl lớn",
+    )
+    parser.add_argument(
+        "--page-snapshot-memory-limit",
+        type=int,
+        default=None,
+        help="Giới hạn số page snapshot giữ lại trong RAM khi crawl lớn",
+    )
     return parser.parse_args()
 
 
@@ -74,6 +95,10 @@ def main() -> None:
             history_limit=args.history_limit,
             crawl_all_pages=args.crawl_all_pages,
             max_pages=args.max_pages,
+            checkpoint_path=args.checkpoint_path,
+            resume_checkpoint=args.resume_checkpoint,
+            keep_page_snapshots_in_memory=not args.no_keep_pages_in_memory,
+            page_snapshot_memory_limit=args.page_snapshot_memory_limit,
         )
     finally:
         sdk.close()
@@ -81,6 +106,11 @@ def main() -> None:
     print(f"Bot: @{result.bot_username}")
     print(f"Từ khóa: {result.query}")
     print(f"ID tin nhắn yêu cầu: {result.request_message.message_id}")
+    print(f"Tổng số trang: {result.total_pages}")
+    print(f"Số trang đã thu được: {result.pages_collected}")
+    print(f"Checkpoint: {result.checkpoint_path}")
+    print(f"Hoàn tất checkpoint: {result.checkpoint_complete}")
+    print(f"Resume từ checkpoint: {result.resumed_from_checkpoint}")
 
     print("\n== Các tin nhắn phản hồi ==")
     if not result.reply_messages:

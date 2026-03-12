@@ -290,6 +290,10 @@ class TelegramSDK:
         history_limit: int = 20,
         crawl_all_pages: bool = False,
         max_pages: int | None = None,
+        checkpoint_path: str | None = None,
+        resume_checkpoint: bool = False,
+        keep_page_snapshots_in_memory: bool = True,
+        page_snapshot_memory_limit: int | None = None,
     ):
         return self.bot_search.search_via_bot(
             bot_username=bot_username,
@@ -299,6 +303,10 @@ class TelegramSDK:
             history_limit=history_limit,
             crawl_all_pages=crawl_all_pages,
             max_pages=max_pages,
+            checkpoint_path=checkpoint_path,
+            resume_checkpoint=resume_checkpoint,
+            keep_page_snapshots_in_memory=keep_page_snapshots_in_memory,
+            page_snapshot_memory_limit=page_snapshot_memory_limit,
         )
 
     def search_via_en_searchbot(
@@ -310,6 +318,10 @@ class TelegramSDK:
         history_limit: int = 20,
         crawl_all_pages: bool = False,
         max_pages: int | None = None,
+        checkpoint_path: str | None = None,
+        resume_checkpoint: bool = False,
+        keep_page_snapshots_in_memory: bool = True,
+        page_snapshot_memory_limit: int | None = None,
     ):
         return self.bot_search.search_via_en_searchbot(
             query=query,
@@ -318,6 +330,10 @@ class TelegramSDK:
             history_limit=history_limit,
             crawl_all_pages=crawl_all_pages,
             max_pages=max_pages,
+            checkpoint_path=checkpoint_path,
+            resume_checkpoint=resume_checkpoint,
+            keep_page_snapshots_in_memory=keep_page_snapshots_in_memory,
+            page_snapshot_memory_limit=page_snapshot_memory_limit,
         )
 
     def discover_by_keyword(

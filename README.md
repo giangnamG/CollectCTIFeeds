@@ -73,6 +73,13 @@ sdk/
 - `search_via_en_searchbot`
 - `discover_by_keyword`
 
+`search_via_en_searchbot(...)` hiện hỗ trợ thêm mode crawl lớn:
+
+- `checkpoint_path`: ghi từng trang ra file JSONL
+- `resume_checkpoint`: resume từ checkpoint cũ nếu job bị ngắt
+- `keep_page_snapshots_in_memory=False`: không giữ toàn bộ trang trong RAM
+- `page_snapshot_memory_limit`: chỉ giữ lại một số snapshot gần nhất trong bộ nhớ
+
 Các method theo chat hiện đã hỗ trợ `chat_reference` linh hoạt:
 
 - `chat_id` dạng số nguyên

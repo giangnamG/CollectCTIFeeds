@@ -102,9 +102,43 @@ Kết quả trả về là `BotSearchResults`, bao gồm:
 - `request_message`
 - `reply_messages`
 - `page_snapshots`
+- `total_pages`
+- `pages_collected`
+- `checkpoint_path`
+- `checkpoint_complete`
+- `resumed_from_checkpoint`
 - `extracted_usernames`
 - `extracted_links`
 - `extracted_chat_usernames`
+
+### Chế độ crawl rất lớn với checkpoint/resume
+
+Nếu cần crawl rất nhiều trang, không nên giữ toàn bộ `page_snapshots` trong RAM.
+
+Hãy dùng:
+
+```python
+result = sdk.search_via_en_searchbot(
+    "bypass kyc",
+    crawl_all_pages=True,
+    checkpoint_path="artifacts/en-searchbot-bypass-kyc.jsonl",
+    resume_checkpoint=True,
+    keep_page_snapshots_in_memory=False,
+)
+```
+
+Ý nghĩa:
+
+- `checkpoint_path`: ghi từng trang vào file JSONL ngay khi crawl được
+- `resume_checkpoint=True`: nếu job bị ngắt, lần chạy sau sẽ tiếp tục dùng checkpoint cũ
+- `keep_page_snapshots_in_memory=False`: không giữ toàn bộ trang trong RAM
+- `page_snapshot_memory_limit=N`: nếu vẫn muốn giữ một phần nhỏ snapshot trong RAM thì đặt giới hạn này
+
+Với mode này:
+
+- ứng dụng vẫn thu đủ số trang mà bot báo
+- nếu không thu đủ, SDK sẽ báo lỗi rõ ràng thay vì trả thiếu
+- `pages_collected` phản ánh số trang thực sự đã được checkpoint/thu thập, không phụ thuộc `page_snapshots` đang giữ trong RAM
 
 ### Cách đăng ký bot mới
 

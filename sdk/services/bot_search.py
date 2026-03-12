@@ -48,6 +48,10 @@ class BotSearchService:
         history_limit: int = 20,
         crawl_all_pages: bool = False,
         max_pages: int | None = None,
+        checkpoint_path: str | None = None,
+        resume_checkpoint: bool = False,
+        keep_page_snapshots_in_memory: bool = True,
+        page_snapshot_memory_limit: int | None = None,
     ) -> BotSearchResults:
         if self._is_en_searchbot(bot_username):
             return self._search_via_en_searchbot_adapter(
@@ -57,6 +61,10 @@ class BotSearchService:
                 history_limit=history_limit,
                 crawl_all_pages=crawl_all_pages,
                 max_pages=max_pages,
+                checkpoint_path=checkpoint_path,
+                resume_checkpoint=resume_checkpoint,
+                keep_page_snapshots_in_memory=keep_page_snapshots_in_memory,
+                page_snapshot_memory_limit=page_snapshot_memory_limit,
             )
         return self._search_via_bot_legacy(
             bot_username=bot_username,
@@ -77,6 +85,10 @@ class BotSearchService:
         history_limit: int = 20,
         crawl_all_pages: bool = False,
         max_pages: int | None = None,
+        checkpoint_path: str | None = None,
+        resume_checkpoint: bool = False,
+        keep_page_snapshots_in_memory: bool = True,
+        page_snapshot_memory_limit: int | None = None,
     ) -> BotSearchResults:
         return self._search_via_en_searchbot_adapter(
             query=query,
@@ -85,6 +97,10 @@ class BotSearchService:
             history_limit=history_limit,
             crawl_all_pages=crawl_all_pages,
             max_pages=max_pages,
+            checkpoint_path=checkpoint_path,
+            resume_checkpoint=resume_checkpoint,
+            keep_page_snapshots_in_memory=keep_page_snapshots_in_memory,
+            page_snapshot_memory_limit=page_snapshot_memory_limit,
         )
 
     def _search_via_en_searchbot_adapter(
@@ -96,6 +112,10 @@ class BotSearchService:
         history_limit: int,
         crawl_all_pages: bool,
         max_pages: int | None,
+        checkpoint_path: str | None,
+        resume_checkpoint: bool,
+        keep_page_snapshots_in_memory: bool,
+        page_snapshot_memory_limit: int | None,
     ) -> BotSearchResults:
         response = self._bot_sdk.execute_command(
             BotRequest(
@@ -112,6 +132,10 @@ class BotSearchService:
                     "history_limit": history_limit,
                     "crawl_all_pages": crawl_all_pages,
                     "max_pages": max_pages,
+                    "checkpoint_path": checkpoint_path,
+                    "resume_checkpoint": resume_checkpoint,
+                    "keep_page_snapshots_in_memory": keep_page_snapshots_in_memory,
+                    "page_snapshot_memory_limit": page_snapshot_memory_limit,
                 },
             )
         )
@@ -130,6 +154,11 @@ class BotSearchService:
             request_message=request_message,
             reply_messages=response.raw_messages,
             page_snapshots=page_snapshots if isinstance(page_snapshots, list) else [],
+            total_pages=data.get("total_pages"),
+            pages_collected=int(data.get("pages_collected", len(page_snapshots))),
+            checkpoint_path=data.get("checkpoint_path"),
+            checkpoint_complete=bool(data.get("checkpoint_complete", False)),
+            resumed_from_checkpoint=bool(data.get("resumed_from_checkpoint", False)),
             extracted_usernames=list(data.get("extracted_usernames", [])),
             extracted_links=list(data.get("extracted_links", [])),
             extracted_chat_usernames=list(data.get("extracted_chat_usernames", [])),

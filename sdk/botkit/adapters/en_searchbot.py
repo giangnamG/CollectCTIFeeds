@@ -6,6 +6,8 @@ import re
 import time
 
 from sdk.botkit.base import BaseBotAdapter
+from sdk.botkit.checkpoints import BotSearchCheckpointWriter
+from sdk.botkit.errors import BotTimeoutError
 from sdk.botkit.models import (
     BotCapability,
     BotCommand,
@@ -67,6 +69,9 @@ class EnSearchBotAdapter(BaseBotAdapter):
             sent_message=sent_message,
             request=request,
         )
+        initial_aggregates = self._extract_aggregates(replies)
+        session.state["last_collected_aggregates"] = initial_aggregates
+        session.state["last_checkpoint_state"] = None
         page_snapshots: list[Message] = []
         if request.options.get("crawl_all_pages"):
             max_pages = request.options.get("max_pages")
@@ -134,12 +139,10 @@ class EnSearchBotAdapter(BaseBotAdapter):
         reply_messages: list[Message],
     ) -> BotResponse:
         page_snapshots = session.state.get("last_page_snapshots", [])
-        extracted_usernames = self._extract_usernames(reply_messages)
-        extracted_links = self._extract_links(reply_messages)
-        extracted_chat_usernames = self._extract_chat_usernames(
-            extracted_usernames=extracted_usernames,
-            extracted_links=extracted_links,
+        aggregates = session.state.get("last_collected_aggregates") or self._extract_aggregates(
+            reply_messages
         )
+        checkpoint_state = session.state.get("last_checkpoint_state") or {}
         return BotResponse(
             bot_id=self.bot_id,
             command_name=request.command_name,
@@ -151,9 +154,17 @@ class EnSearchBotAdapter(BaseBotAdapter):
                 "reply_count": len(reply_messages),
                 "page_snapshots": page_snapshots,
                 "page_snapshot_count": len(page_snapshots),
-                "extracted_usernames": extracted_usernames,
-                "extracted_links": extracted_links,
-                "extracted_chat_usernames": extracted_chat_usernames,
+                "total_pages": checkpoint_state.get("total_pages"),
+                "pages_collected": checkpoint_state.get(
+                    "pages_collected",
+                    len(page_snapshots),
+                ),
+                "checkpoint_path": checkpoint_state.get("path"),
+                "checkpoint_complete": checkpoint_state.get("is_complete", False),
+                "resumed_from_checkpoint": checkpoint_state.get("resumed", False),
+                "extracted_usernames": aggregates["extracted_usernames"],
+                "extracted_links": aggregates["extracted_links"],
+                "extracted_chat_usernames": aggregates["extracted_chat_usernames"],
             },
             raw_messages=reply_messages,
             correlation_id=request.context.correlation_id or request.request_id,
@@ -173,39 +184,153 @@ class EnSearchBotAdapter(BaseBotAdapter):
         if paginated is None:
             return []
 
-        snapshots = [self.snapshot_message(paginated)]
+        checkpoint = self._build_checkpoint_writer(request)
+        keep_page_snapshots_in_memory = bool(
+            request.options.get(
+                "keep_page_snapshots_in_memory",
+                checkpoint is None,
+            )
+        )
+        page_snapshot_memory_limit = request.options.get("page_snapshot_memory_limit")
+        memory_limit = (
+            None
+            if page_snapshot_memory_limit is None
+            else max(0, int(page_snapshot_memory_limit))
+        )
+        snapshots_by_page: dict[int, Message] = {}
+        collected_page_numbers: set[int] = set()
         current = paginated
         seen_signatures = {self._message_signature(current)}
-        seen_page_numbers = {self._page_number(current)}
-        target_pages = self._page_total(current)
-        if max_pages is not None:
-            target_pages = min(target_pages, max_pages)
+        aggregate_state = self._load_checkpoint_aggregates(checkpoint)
+        self._record_page_snapshot(
+            page=current,
+            snapshots_by_page=snapshots_by_page,
+            collected_page_numbers=collected_page_numbers,
+            keep_in_memory=keep_page_snapshots_in_memory,
+            memory_limit=memory_limit,
+            checkpoint=checkpoint,
+            aggregate_state=aggregate_state,
+        )
+        pagination_poll_attempts = int(
+            request.options.get("pagination_poll_attempts", max(poll_attempts * 10, 60))
+        )
+        pagination_history_limit = int(
+            request.options.get(
+                "pagination_history_limit",
+                max(200, len(reply_messages) * 10),
+            )
+        )
+        pagination_stall_retries = int(
+            request.options.get("pagination_stall_retries", 30)
+        )
+        stall_count = 0
 
-        while self._page_number(current) < target_pages:
-            if not self._has_next_button(current):
+        while True:
+            target_pages = self._page_total(current)
+            if max_pages is not None:
+                target_pages = min(target_pages, max_pages)
+            current_page_number = self._page_number(current)
+            current_signature = self._message_signature(current)
+            if current_page_number >= target_pages:
                 break
+            if not self._has_next_button(current):
+                raise BotTimeoutError(
+                    f"Pagination stopped unexpectedly at page {current_page_number}/{target_pages} "
+                    f"for bot '{self.bot_id}'."
+                )
 
             updated = self._advance_to_next_page(
                 request=request,
                 session=session,
                 current=current,
-                poll_attempts=poll_attempts,
+                poll_attempts=pagination_poll_attempts,
                 poll_interval_seconds=poll_interval_seconds,
             )
-            if updated is None:
-                break
+            if not self._shows_forward_progress(
+                candidate=updated,
+                previous_signature=current_signature,
+                previous_page_number=current_page_number,
+            ):
+                recovered = self._recover_paginated_message(
+                    request=request,
+                    session=session,
+                    current=current,
+                    history_limit=pagination_history_limit,
+                )
+                if not self._shows_forward_progress(
+                    candidate=recovered,
+                    previous_signature=current_signature,
+                    previous_page_number=current_page_number,
+                ):
+                    stall_count += 1
+                    if stall_count > pagination_stall_retries:
+                        raise BotTimeoutError(
+                            f"Could not advance pagination beyond page {current_page_number}/{target_pages} "
+                            f"for bot '{self.bot_id}' after {pagination_stall_retries} recovery attempts."
+                        )
+                    if poll_interval_seconds > 0:
+                        time.sleep(poll_interval_seconds)
+                    continue
+                updated = recovered
+            stall_count = 0
             current = updated
             current_signature = self._message_signature(current)
             current_page_number = self._page_number(current)
             if current_signature in seen_signatures:
-                break
-            if current_page_number in seen_page_numbers and current_page_number != 1:
-                break
+                stall_count += 1
+                if stall_count > pagination_stall_retries:
+                    raise BotTimeoutError(
+                        f"Pagination kept returning the same page signature at page "
+                        f"{current_page_number}/{target_pages} for bot '{self.bot_id}'."
+                    )
+                if poll_interval_seconds > 0:
+                    time.sleep(poll_interval_seconds)
+                continue
             seen_signatures.add(current_signature)
-            seen_page_numbers.add(current_page_number)
-            snapshots.append(self.snapshot_message(current))
+            self._record_page_snapshot(
+                page=current,
+                snapshots_by_page=snapshots_by_page,
+                collected_page_numbers=collected_page_numbers,
+                keep_in_memory=keep_page_snapshots_in_memory,
+                memory_limit=memory_limit,
+                checkpoint=checkpoint,
+                aggregate_state=aggregate_state,
+            )
 
-        return snapshots
+        expected_pages = target_pages if max_pages is None else min(target_pages, max_pages)
+        collected_pages = self._collected_page_count(
+            snapshots_by_page=snapshots_by_page,
+            collected_page_numbers=collected_page_numbers,
+            checkpoint=checkpoint,
+        )
+        if collected_pages != expected_pages:
+            raise BotTimeoutError(
+                f"Pagination finished with {collected_pages}/{expected_pages} pages "
+                f"for bot '{self.bot_id}'."
+            )
+        if checkpoint is not None:
+            checkpoint.mark_complete(total_pages=expected_pages)
+            checkpoint_state = checkpoint.state()
+            session.state["last_checkpoint_state"] = {
+                "path": checkpoint_state.path,
+                "total_pages": checkpoint_state.total_pages,
+                "pages_collected": checkpoint_state.pages_collected,
+                "last_page_number": checkpoint_state.last_page_number,
+                "is_complete": checkpoint_state.is_complete,
+                "resumed": checkpoint_state.resumed,
+            }
+            aggregate_state = checkpoint.combined_aggregates()
+        else:
+            session.state["last_checkpoint_state"] = {
+                "path": None,
+                "total_pages": expected_pages,
+                "pages_collected": collected_pages,
+                "last_page_number": expected_pages,
+                "is_complete": True,
+                "resumed": False,
+            }
+        session.state["last_collected_aggregates"] = aggregate_state
+        return [snapshots_by_page[page] for page in sorted(snapshots_by_page)]
 
     def _advance_to_next_page(
         self,
@@ -218,6 +343,7 @@ class EnSearchBotAdapter(BaseBotAdapter):
     ) -> Message | None:
         previous_signature = self._message_signature(current)
         previous_page_number = self._page_number(current)
+        previous_edit_timestamp = current.edit_timestamp
         click_attempts = int(request.options.get("pagination_click_attempts", 2))
 
         for click_attempt in range(click_attempts):
@@ -232,17 +358,155 @@ class EnSearchBotAdapter(BaseBotAdapter):
                 message_id=current.message_id,
                 previous_signature=previous_signature,
                 previous_page_number=previous_page_number,
+                previous_edit_timestamp=previous_edit_timestamp,
                 poll_attempts=poll_attempts,
                 poll_interval_seconds=poll_interval_seconds,
             )
-            if (
-                self._message_signature(updated) != previous_signature
-                or self._page_number(updated) > previous_page_number
+            if self._shows_forward_progress(
+                candidate=updated,
+                previous_signature=previous_signature,
+                previous_page_number=previous_page_number,
             ):
                 return updated
             if click_attempt < click_attempts - 1 and poll_interval_seconds > 0:
                 time.sleep(poll_interval_seconds)
         return None
+
+    def _recover_paginated_message(
+        self,
+        *,
+        request: BotRequest,
+        session: BotSession,
+        current: Message,
+        history_limit: int,
+    ) -> Message | None:
+        history = self.call_with_transport_retry(
+            lambda: self.transport.get_chat_history(
+                chat_id=session.chat_id,
+                limit=history_limit,
+            ),
+            request=request,
+            operation="get_chat_history",
+            allow_replay=True,
+        )
+        candidates: list[Message] = []
+        current_page_number = self._page_number(current)
+        current_signature = self._message_signature(current)
+        for message in history:
+            if message.sender_id is not None and message.sender_id != session.chat_id:
+                continue
+            if not PAGE_PATTERN.search(message.text):
+                continue
+            if message.message_id == current.message_id:
+                candidates.append(message)
+                continue
+            if self._page_number(message) > current_page_number:
+                candidates.append(message)
+        candidates.sort(
+            key=lambda message: (
+                self._page_number(message),
+                message.edit_timestamp or "",
+                message.message_id,
+            )
+        )
+        for candidate in reversed(candidates):
+            if (
+                self._page_number(candidate) > current_page_number
+                or self._message_signature(candidate) != current_signature
+            ):
+                return candidate
+        return None
+
+    def _build_checkpoint_writer(
+        self,
+        request: BotRequest,
+    ) -> BotSearchCheckpointWriter | None:
+        checkpoint_path = request.options.get("checkpoint_path")
+        if checkpoint_path is None:
+            return None
+        return BotSearchCheckpointWriter(
+            str(checkpoint_path),
+            bot_id=self.bot_id,
+            bot_username=self.bot_username,
+            query=str(request.params.get("query", "")),
+            resume=bool(request.options.get("resume_checkpoint", False)),
+        )
+
+    def _load_checkpoint_aggregates(
+        self,
+        checkpoint: BotSearchCheckpointWriter | None,
+    ) -> dict[str, list[str]]:
+        if checkpoint is None:
+            return {
+                "extracted_usernames": [],
+                "extracted_links": [],
+                "extracted_chat_usernames": [],
+            }
+        return checkpoint.combined_aggregates()
+
+    def _record_page_snapshot(
+        self,
+        *,
+        page: Message,
+        snapshots_by_page: dict[int, Message],
+        collected_page_numbers: set[int],
+        keep_in_memory: bool,
+        memory_limit: int | None,
+        checkpoint: BotSearchCheckpointWriter | None,
+        aggregate_state: dict[str, list[str]],
+    ) -> None:
+        page_number = self._page_number(page)
+        total_pages = self._page_total(page)
+        signature = self._message_signature(page)
+        collected_page_numbers.add(page_number)
+        page_aggregates = self._extract_aggregates([page])
+        if checkpoint is not None:
+            checkpoint.append_page(
+                page_number=page_number,
+                total_pages=total_pages,
+                signature=signature,
+                text=page.text,
+                message_id=page.message_id,
+                timestamp=page.timestamp,
+                edit_timestamp=page.edit_timestamp,
+                extracted_usernames=page_aggregates["extracted_usernames"],
+                extracted_links=page_aggregates["extracted_links"],
+                extracted_chat_usernames=page_aggregates["extracted_chat_usernames"],
+            )
+            checkpoint_aggregates = checkpoint.combined_aggregates()
+            aggregate_state["extracted_usernames"] = checkpoint_aggregates["extracted_usernames"]
+            aggregate_state["extracted_links"] = checkpoint_aggregates["extracted_links"]
+            aggregate_state["extracted_chat_usernames"] = checkpoint_aggregates[
+                "extracted_chat_usernames"
+            ]
+        else:
+            self._merge_aggregate_values(
+                aggregate_state,
+                page_aggregates,
+            )
+
+        if not keep_in_memory:
+            return
+
+        snapshots_by_page[page_number] = self.snapshot_message(page)
+        if memory_limit is None or memory_limit <= 0:
+            if memory_limit == 0:
+                snapshots_by_page.clear()
+            return
+        while len(snapshots_by_page) > memory_limit:
+            oldest_page = min(snapshots_by_page)
+            snapshots_by_page.pop(oldest_page, None)
+
+    @staticmethod
+    def _collected_page_count(
+        *,
+        snapshots_by_page: dict[int, Message],
+        collected_page_numbers: set[int],
+        checkpoint: BotSearchCheckpointWriter | None,
+    ) -> int:
+        if checkpoint is not None:
+            return checkpoint.state().pages_collected
+        return len(collected_page_numbers)
 
     def _wait_for_message_update(
         self,
@@ -252,6 +516,7 @@ class EnSearchBotAdapter(BaseBotAdapter):
         message_id: int,
         previous_signature: str,
         previous_page_number: int,
+        previous_edit_timestamp: str | None,
         poll_attempts: int,
         poll_interval_seconds: float,
     ) -> Message:
@@ -273,11 +538,47 @@ class EnSearchBotAdapter(BaseBotAdapter):
             if (
                 current_signature != previous_signature
                 or current_page_number > previous_page_number
+                or self._is_new_edit_version(
+                    current=current,
+                    previous_edit_timestamp=previous_edit_timestamp,
+                )
             ):
                 return current
             if attempt < poll_attempts - 1:
                 time.sleep(poll_interval_seconds)
         return current
+
+    @staticmethod
+    def _shows_forward_progress(
+        *,
+        candidate: Message | None,
+        previous_signature: str,
+        previous_page_number: int,
+    ) -> bool:
+        if candidate is None:
+            return False
+        candidate_page_number = EnSearchBotAdapter._page_number(candidate)
+        if candidate_page_number > previous_page_number:
+            return True
+        candidate_signature = EnSearchBotAdapter._message_signature(candidate)
+        if (
+            candidate_page_number == previous_page_number
+            and candidate_signature != previous_signature
+        ):
+            return True
+        return False
+
+    @staticmethod
+    def _is_new_edit_version(
+        *,
+        current: Message,
+        previous_edit_timestamp: str | None,
+    ) -> bool:
+        if current.edit_timestamp is None:
+            return False
+        if previous_edit_timestamp is None:
+            return True
+        return current.edit_timestamp != previous_edit_timestamp
 
     @staticmethod
     def _looks_like_relevant_reply(
@@ -347,6 +648,34 @@ class EnSearchBotAdapter(BaseBotAdapter):
                 chat_usernames.append(candidate)
                 seen.add(candidate.casefold())
         return chat_usernames
+
+    @classmethod
+    def _extract_aggregates(cls, messages: list[Message]) -> dict[str, list[str]]:
+        extracted_usernames = cls._extract_usernames(messages)
+        extracted_links = cls._extract_links(messages)
+        extracted_chat_usernames = cls._extract_chat_usernames(
+            extracted_usernames=extracted_usernames,
+            extracted_links=extracted_links,
+        )
+        return {
+            "extracted_usernames": extracted_usernames,
+            "extracted_links": extracted_links,
+            "extracted_chat_usernames": extracted_chat_usernames,
+        }
+
+    @staticmethod
+    def _merge_aggregate_values(
+        aggregate_state: dict[str, list[str]],
+        page_aggregates: dict[str, list[str]],
+    ) -> None:
+        for key, values in page_aggregates.items():
+            seen = {value.casefold() for value in aggregate_state[key]}
+            for value in values:
+                normalized = value.casefold()
+                if normalized in seen:
+                    continue
+                seen.add(normalized)
+                aggregate_state[key].append(value)
 
     @staticmethod
     def _normalize_link(raw_link: str) -> str:
