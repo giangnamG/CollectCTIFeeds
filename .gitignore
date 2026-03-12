@@ -3,5 +3,9 @@
 __pycache__/
 *.pyc
 *.egg-info/
+.agents/
+.cursor/
+.gemini/
+_bmad/
 
 config/telegram.session.json
