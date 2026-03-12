@@ -1,0 +1,7 @@
+{
+  "api_id": "123456",
+  "api_hash": "your_api_hash",
+  "session_name": ".sessions/collector",
+  "phone_number": "+15550000000",
+  "allow_paid_stars": null
+}
