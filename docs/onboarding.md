@@ -218,6 +218,7 @@ Ngoài ra, dự án hiện đã có lớp tool schema chính thức tại:
 ### 11. Những tài liệu nên đọc tiếp theo
 
 - [docs/botkit.md](/home/kali/Desktop/CollectCTIFeeds/docs/botkit.md)
+- [docs/codex-handoff.md](/home/kali/Desktop/CollectCTIFeeds/docs/codex-handoff.md)
 - [docs/telethon-adapter.md](/home/kali/Desktop/CollectCTIFeeds/docs/telethon-adapter.md)
 - [docs/en-searchbot-integration.md](/home/kali/Desktop/CollectCTIFeeds/docs/en-searchbot-integration.md)
 - [docs/sdk-scaffold.md](/home/kali/Desktop/CollectCTIFeeds/docs/sdk-scaffold.md)

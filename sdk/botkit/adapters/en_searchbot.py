@@ -143,6 +143,10 @@ class EnSearchBotAdapter(BaseBotAdapter):
             reply_messages
         )
         checkpoint_state = session.state.get("last_checkpoint_state") or {}
+        inferred_pages_collected, inferred_total_pages = self._infer_pagination_state(
+            reply_messages=reply_messages,
+            page_snapshots=page_snapshots,
+        )
         return BotResponse(
             bot_id=self.bot_id,
             command_name=request.command_name,
@@ -154,10 +158,10 @@ class EnSearchBotAdapter(BaseBotAdapter):
                 "reply_count": len(reply_messages),
                 "page_snapshots": page_snapshots,
                 "page_snapshot_count": len(page_snapshots),
-                "total_pages": checkpoint_state.get("total_pages"),
+                "total_pages": checkpoint_state.get("total_pages", inferred_total_pages),
                 "pages_collected": checkpoint_state.get(
                     "pages_collected",
-                    len(page_snapshots),
+                    inferred_pages_collected,
                 ),
                 "checkpoint_path": checkpoint_state.get("path"),
                 "checkpoint_complete": checkpoint_state.get("is_complete", False),
@@ -676,6 +680,23 @@ class EnSearchBotAdapter(BaseBotAdapter):
                     continue
                 seen.add(normalized)
                 aggregate_state[key].append(value)
+
+    @classmethod
+    def _infer_pagination_state(
+        cls,
+        *,
+        reply_messages: list[Message],
+        page_snapshots: list[Message],
+    ) -> tuple[int, int | None]:
+        if page_snapshots:
+            highest_page = max(cls._page_number(message) for message in page_snapshots)
+            total_pages = max(cls._page_total(message) for message in page_snapshots)
+            return highest_page, total_pages
+
+        paginated = cls._find_paginated_message(reply_messages)
+        if paginated is None:
+            return 0, None
+        return cls._page_number(paginated), cls._page_total(paginated)
 
     @staticmethod
     def _normalize_link(raw_link: str) -> str:

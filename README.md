@@ -18,6 +18,7 @@ Project documentation is kept in clearly named Markdown files.
 - [`docs/en-searchbot-integration.md`](./docs/en-searchbot-integration.md): unofficial `@en_SearchBot` workflow and usage
 - [`docs/botkit.md`](./docs/botkit.md): tài liệu tiếng Việt về cách dùng BotSDK, adapter, và bot orchestration
 - [`docs/onboarding.md`](./docs/onboarding.md): hướng dẫn onboarding cho người mới vào dự án
+- [`docs/codex-handoff.md`](./docs/codex-handoff.md): handoff ngắn cho Codex hoặc dev ở phiên mới để tiếp tục công việc nhanh
 - [`docs/tool-schema.md`](./docs/tool-schema.md): tài liệu về tool schema chính thức để dựng facade kiểu MCP hoặc automation
 
 ## Package layout

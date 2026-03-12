@@ -212,6 +212,20 @@ class BotSearchServiceTests(unittest.TestCase):
             ["@Alpha", "@Gamma", "@BetaChan"],
         )
 
+    def test_search_via_en_searchbot_reports_first_page_metadata_without_full_crawl(self) -> None:
+        result = self.service.search_via_en_searchbot(
+            "needle",
+            crawl_all_pages=False,
+            poll_attempts=2,
+            poll_interval_seconds=0.0,
+        )
+
+        self.assertEqual(result.pages_collected, 1)
+        self.assertEqual(result.total_pages, 2)
+        self.assertFalse(result.checkpoint_complete)
+        self.assertEqual(len(result.page_snapshots), 0)
+        self.assertIn("@Alpha", result.extracted_usernames)
+
     def test_search_via_en_searchbot_ignores_non_bot_noise_and_waits_for_pagination(self) -> None:
         self.transport._delay_pagination_update = True
 
